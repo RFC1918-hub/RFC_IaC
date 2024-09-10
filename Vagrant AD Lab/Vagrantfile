@@ -1,0 +1,72 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+
+    ENV["VAGRANT_DEFAULT_PROVIDER"] = "virtualbox"
+    
+    # virtual machine configuration
+    vms = [
+        {:name => "dc01", :ip => "192.168.56.101", :memory => 4096, :cpus => 2, :role => "dc"},
+        {:name => "server01", :ip => "192.168.56.102", :memory => 4096, :cpus => 2, :role => "server"},
+    ]
+
+    # create virtual machines
+
+    # create logger virtual machine
+
+    config.vm.define "logger" do |config|
+        config.vm.box = "bento/ubuntu-20.04"
+        config.vm.hostname = "logger"
+        config.vm.synced_folder ".", "/vagrant"
+
+        config.vm.network :private_network, ip: "192.168.56.100"
+        config.vm.network :forwarded_port, guest: 8000, host: 8000, id: "winrm", auto_correct: true
+        
+
+        config.vm.provision :shell, path: "scripts/logger_setup.sh", privileged: true
+
+        config.vm.provider "virtualbox" do |vb|
+            vb.customize ["modifyvm", :id, "--memory", 4096]
+            vb.customize ["modifyvm", :id, "--cpus", 2]
+            vb.customize ["modifyvm", :id, "--vram", "32"]
+            vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+            vb.customize ["modifyvm", :id, "--clipboard", "bidirectional"]
+            vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+            vb.customize ["setextradata", "global", "GUI/SuppressMessages", "all" ]
+        end
+    end
+
+    # create domain virtual machine
+    vms.each do |vm|
+        config.vm.define vm[:name] do |config|
+            config.vm.box = "gusztavvargadr/windows-server"
+            config.vm.hostname = vm[:name]
+            # use plaintext WinRM transport and force basic auth, this is needed because negotiate will stop working after domain controller is installed
+            config.vm.communicator = "winrm"
+            config.winrm.transport = "plaintext"
+            config.winrm.basic_auth_only = true
+
+            config.vm.network :private_network, ip: vm[:ip]
+
+            config.vm.provision "shell", path: "scripts/fix-second-network.ps1", args: vm[:ip]
+            config.vm.provision "shell", path: "scripts/disable-windows-firewall.ps1"
+            if vm[:role] == "dc"
+                config.vm.provision "shell", path: "scripts/create-domain.ps1"
+            else
+                config.vm.provision "shell", path: "scripts/join-domain.ps1", args: "-dnsServers 192.168.56.101"
+            end
+            config.vm.provision "reload"
+            config.vm.provision "shell", path: "scripts/setup-configations.ps1"
+
+            config.vm.provider "virtualbox" do |vb|
+                vb.gui = true
+                vb.customize ["modifyvm", :id, "--memory", vm[:memory]]
+                vb.customize ["modifyvm", :id, "--cpus", vm[:cpus]]
+                vb.customize ["modifyvm", :id, "--vram", "32"]
+                vb.customize ["modifyvm", :id, "--clipboard", "bidirectional"]
+                vb.customize ["setextradata", "global", "GUI/SuppressMessages", "all" ]
+            end
+        end
+    end
+end
